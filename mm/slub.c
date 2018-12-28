@@ -1947,6 +1947,7 @@ static void *get_any_partial(struct kmem_cache *s, gfp_t flags,
 					 * between allocation and the cpuset
 					 * update
 					 */
+					read_mems_allowed_cancel();
 					return object;
 				}
 			}

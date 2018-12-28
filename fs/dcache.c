@@ -1267,6 +1267,8 @@ again:
 		break;
 	case D_WALK_QUIT:
 	case D_WALK_SKIP:
+		if (!(seq&1))
+			read_seqcount_cancel(&rename_lock.seqcount);
 		goto out_unlock;
 	case D_WALK_NORETRY:
 		retry = false;
@@ -1291,6 +1293,8 @@ resume:
 			break;
 		case D_WALK_QUIT:
 			spin_unlock(&dentry->d_lock);
+			if (!(seq&1))
+				read_seqcount_cancel(&rename_lock.seqcount);
 			goto out_unlock;
 		case D_WALK_NORETRY:
 			retry = false;
@@ -1322,7 +1326,7 @@ ascend:
 		spin_lock(&this_parent->d_lock);
 
 		/* might go back up the wrong parent if we have had a rename. */
-		if (need_seqretry(&rename_lock, seq))
+		if (need_seqretry_check(&rename_lock, seq))
 			goto rename_retry;
 		/* go into the first sibling still alive */
 		do {
@@ -1344,6 +1348,7 @@ out_unlock:
 	return;
 
 rename_retry:
+	done_seqretry(&rename_lock, seq);
 	spin_unlock(&this_parent->d_lock);
 	rcu_read_unlock();
 	BUG_ON(seq & 1);
@@ -2189,16 +2194,22 @@ seqretry:
 		 * we are still guaranteed NUL-termination of ->d_name.name.
 		 */
 		seq = raw_seqcount_begin(&dentry->d_seq);
-		if (dentry->d_parent != parent)
+		if (dentry->d_parent != parent) {
+			read_seqcount_cancel(&dentry->d_seq);
 			continue;
-		if (d_unhashed(dentry))
+		}
+		if (d_unhashed(dentry)) {
+			read_seqcount_cancel(&dentry->d_seq);
 			continue;
+		}
 
 		if (unlikely(parent->d_flags & DCACHE_OP_COMPARE)) {
 			int tlen;
 			const char *tname;
-			if (dentry->d_name.hash != hashlen_hash(hashlen))
+			if (dentry->d_name.hash != hashlen_hash(hashlen)) {
+				read_seqcount_cancel(&dentry->d_seq);
 				continue;
+			}
 			tlen = dentry->d_name.len;
 			tname = dentry->d_name.name;
 			/* we want a consistent (name,len) pair */
@@ -2210,6 +2221,8 @@ seqretry:
 						    tlen, tname, name) != 0)
 				continue;
 		} else {
+			read_seqcount_cancel(&dentry->d_seq);
+
 			if (dentry->d_name.hash_len != hashlen)
 				continue;
 			if (dentry_cmp(dentry, str, hashlen_len(hashlen)) != 0)
@@ -2240,8 +2253,10 @@ struct dentry *d_lookup(const struct dentry *parent, const struct qstr *name)
 	do {
 		seq = read_seqbegin(&rename_lock);
 		dentry = __d_lookup(parent, name);
-		if (dentry)
+		if (dentry) {
+			read_seqcount_cancel(&rename_lock.seqcount);
 			break;
+		}
 	} while (read_seqretry(&rename_lock, seq));
 	return dentry;
 }
@@ -2461,11 +2476,13 @@ retry:
 	if (unlikely(dentry)) {
 		if (!lockref_get_not_dead(&dentry->d_lockref)) {
 			rcu_read_unlock();
+			read_seqcancel(&rename_lock);
 			goto retry;
 		}
 		if (read_seqcount_retry(&dentry->d_seq, d_seq)) {
 			rcu_read_unlock();
 			dput(dentry);
+			read_seqcancel(&rename_lock);
 			goto retry;
 		}
 		rcu_read_unlock();

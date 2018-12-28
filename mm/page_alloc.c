@@ -67,6 +67,7 @@
 #include <linux/lockdep.h>
 #include <linux/nmi.h>
 #include <linux/psi.h>
+#include <linux/ktsan.h>
 
 #include <asm/sections.h>
 #include <asm/tlbflush.h>
@@ -1076,6 +1077,7 @@ static __always_inline bool free_pages_prepare(struct page *page,
 	kernel_poison_pages(page, 1 << order, 0);
 	kernel_map_pages(page, 1 << order, 0);
 	kasan_free_nondeferred_pages(page, order);
+	ktsan_free_page(page, order);
 
 	return true;
 }
@@ -2938,6 +2940,8 @@ void split_page(struct page *page, unsigned int order)
 	VM_BUG_ON_PAGE(PageCompound(page), page);
 	VM_BUG_ON_PAGE(!page_count(page), page);
 
+	ktsan_split_page(page, order);
+
 	for (i = 1; i < (1 << order); i++)
 		set_page_refcounted(page + i);
 	split_page_owner(page, order);
@@ -4459,6 +4463,8 @@ fail:
 	warn_alloc(gfp_mask, ac->nodemask,
 			"page allocation failure: order:%u", order);
 got_pg:
+	ktsan_alloc_page(page, order, gfp_mask, -1);
+
 	return page;
 }
 
@@ -4565,6 +4571,8 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 		ac.nodemask = nodemask;
 
 	page = __alloc_pages_slowpath(alloc_mask, order, &ac);
+	if (page)
+		ktsan_alloc_page(page, order, gfp_mask, -1);
 
 out:
 	if (memcg_kmem_enabled() && (gfp_mask & __GFP_ACCOUNT) && page &&

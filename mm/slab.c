@@ -117,6 +117,7 @@
 #include	<linux/memory.h>
 #include	<linux/prefetch.h>
 #include	<linux/sched/task_stack.h>
+#include	<linux/ktsan.h>
 
 #include	<net/sock.h>
 
@@ -1417,6 +1418,8 @@ static struct page *kmem_getpages(struct kmem_cache *cachep, gfp_t flags,
 	if (sk_memalloc_socks() && page_is_pfmemalloc(page))
 		SetPageSlabPfmemalloc(page);
 
+	ktsan_alloc_page(page, cachep->gfporder, cachep->flags, nodeid);
+
 	return page;
 }
 
@@ -1427,6 +1430,8 @@ static void kmem_freepages(struct kmem_cache *cachep, struct page *page)
 {
 	int order = cachep->gfporder;
 	unsigned long nr_freed = (1 << order);
+
+	ktsan_free_page(page, cachep->gfporder);
 
 	if (cachep->flags & SLAB_RECLAIM_ACCOUNT)
 		mod_lruvec_page_state(page, NR_SLAB_RECLAIMABLE, -nr_freed);
@@ -3230,6 +3235,8 @@ retry:
 
 	if (unlikely(!obj && read_mems_allowed_retry(cpuset_mems_cookie)))
 		goto retry_cpuset;
+	if (obj)
+		read_mems_allowed_cancel();
 	return obj;
 }
 
@@ -3325,6 +3332,7 @@ slab_alloc_node(struct kmem_cache *cachep, gfp_t flags, int nodeid,
 	local_irq_restore(save_flags);
 	ptr = cache_alloc_debugcheck_after(cachep, flags, ptr, caller);
 
+	ktsan_slab_alloc(ptr, cachep->object_size, cachep->flags);
 	if (unlikely(flags & __GFP_ZERO) && ptr)
 		memset(ptr, 0, cachep->object_size);
 
@@ -3382,6 +3390,7 @@ slab_alloc(struct kmem_cache *cachep, gfp_t flags, unsigned long caller)
 	objp = cache_alloc_debugcheck_after(cachep, flags, objp, caller);
 	prefetchw(objp);
 
+	ktsan_slab_alloc(objp, cachep->object_size, cachep->flags);
 	if (unlikely(flags & __GFP_ZERO) && objp)
 		memset(objp, 0, cachep->object_size);
 
@@ -3506,6 +3515,7 @@ void ___cache_free(struct kmem_cache *cachep, void *objp,
 	kmemleak_free_recursive(objp, cachep->flags);
 	objp = cache_free_debugcheck(cachep, objp, caller);
 
+	ktsan_slab_free(objp, cachep->object_size, cachep->flags);
 	/*
 	 * Skip calling cache_free_alien() when the platform is not numa.
 	 * This will avoid cache misses that happen while accessing slabp (which
